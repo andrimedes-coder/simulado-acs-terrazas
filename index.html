@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simulador Hidráulico ACS - As Built</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=JetBrains+Mono:wght@400;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* slate-900 */
+            color: #f1f5f9; /* slate-100 */
+            margin: 0;
+            padding: 1.5rem;
+        }
+
+        .font-mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Animaciones SVG */
+        .flow-anim { stroke-dasharray: 8 6; animation: flow 1s linear infinite; }
+        .flow-anim-fast { stroke-dasharray: 12 8; animation: flow 0.5s linear infinite; }
+        .flow-anim-very-fast { stroke-dasharray: 16 10; animation: flow 0.25s linear infinite; }
+        .flow-anim-slow { stroke-dasharray: 6 4; animation: flow 2s linear infinite; }
+        .flow-gas { stroke-dasharray: 10 5; animation: flow 0.3s linear infinite; }
+        
+        @keyframes flow { 
+            from { stroke-dashoffset: 100; } 
+            to { stroke-dashoffset: 0; } 
+        }
+        
+        @keyframes fire { 
+            0% { opacity: 0.8; transform: scaleY(0.9); } 
+            50% { opacity: 1; transform: scaleY(1.1); } 
+            100% { opacity: 0.8; transform: scaleY(0.9); } 
+        }
+        
+        .flame { 
+            transform-origin: bottom; 
+            animation: fire 0.5s ease-in-out infinite alternate; 
+        }
+
+        /* Clases auxiliares para JS */
+        .hidden { display: none !important; }
+        .btn-active-blue { background-color: #2563eb; border-color: #60a5fa; color: white; box-shadow: 0 0 10px rgba(59,130,246,0.5); }
+        .btn-inactive { background-color: rgba(51,65,85,0.5); border-color: #475569; color: #cbd5e1; }
+        .btn-inactive:hover { background-color: #475569; }
+        
+        .btn-gas-ok { background-color: rgba(5,150,105,0.2); color: #34d399; border: 1px solid rgba(16,185,129,0.5); }
+        .btn-gas-fail { background-color: rgba(220,38,38,0.2); color: #f87171; border: 1px solid rgba(239,68,68,0.5); }
+        .btn-gas-idle { color: #64748b; background-color: transparent; border: 1px solid transparent;}
+        .btn-gas-idle:hover { color: #cbd5e1; }
+    </style>
+</head>
+<body>
+    <div class="max-w-7xl mx-auto w-full flex flex-col min-h-screen">
+        
+        <header class="mb-6 border-b border-slate-700 pb-4">
+            <h1 class="text-3xl font-bold text-blue-400">Auditoría Termohidráulica: Test de Fallos y Recuperación</h1>
+            <p class="text-slate-400 mt-1">Esquema R290 (33 kW) + Cascada Gas (196 kW) | Inercia 5.000L | T<sub>D1</sub> &gt; T<sub>D2</sub> &gt; T<sub>D3</sub></p>
+        </header>
+
+        <div class="grid grid-cols-1 xl:grid-cols-4 gap-6 mb-6">
+            
+            <!-- Panel de Control Interactivo -->
+            <div class="bg-slate-800 rounded-xl p-5 shadow-lg border border-slate-700 xl:col-span-1 flex flex-col">
+                <div class="mb-5">
+                    <h2 class="text-sm uppercase tracking-wider font-semibold mb-3 text-slate-400">1. Demanda de ACS</h2>
+                    <div class="grid grid-cols-2 gap-2" id="botones-demanda">
+                        <button onclick="setDemanda(0)" id="btn-dem-0" class="py-2 text-sm rounded-md font-bold transition-all border btn-inactive">0%</button>
+                        <button onclick="setDemanda(20)" id="btn-dem-20" class="py-2 text-sm rounded-md font-bold transition-all border btn-active-blue">20%</button>
+                        <button onclick="setDemanda(50)" id="btn-dem-50" class="py-2 text-sm rounded-md font-bold transition-all border btn-inactive">50%</button>
+                        <button onclick="setDemanda(100)" id="btn-dem-100" class="py-2 text-sm rounded-md font-bold transition-all border btn-inactive">100%</button>
+                    </div>
+                </div>
+
+                <div class="mb-5 flex-grow">
+                    <h2 class="text-sm uppercase tracking-wider font-semibold mb-3 text-slate-400">2. Estado Apoyo Gas</h2>
+                    <div class="flex bg-slate-900 rounded-lg p-1 border border-slate-700">
+                        <button onclick="setGasOperativo(true)" id="btn-gas-on" class="flex-1 py-2 text-sm rounded font-bold transition-all btn-gas-ok">OK (Auto)</button>
+                        <button onclick="setGasOperativo(false)" id="btn-gas-off" class="flex-1 py-2 text-sm rounded font-bold transition-all btn-gas-idle">FORZAR FALLO</button>
+                    </div>
+                </div>
+
+                <div id="status-container" class="p-4 rounded-lg border bg-slate-900 border-slate-700">
+                    <span id="system-status" class="text-sm text-blue-400">Iniciando simulador...</span>
+                </div>
+            </div>
+
+            <!-- Panel de Telemetría -->
+            <div class="bg-slate-800 rounded-xl p-5 shadow-lg border border-slate-700 xl:col-span-3">
+                <h2 class="text-sm uppercase tracking-wider font-semibold mb-4 text-slate-400 border-b border-slate-700 pb-2">Telemetría de Flujos y Recuperación Energética</h2>
+                
+                <div class="flex flex-col md:flex-row gap-4 mb-4">
+                    <!-- Resumen Inercia -->
+                    <div class="flex-1 bg-slate-900 p-4 rounded-lg border border-slate-700 flex justify-between items-center">
+                        <div>
+                            <span class="block text-slate-400 text-xs uppercase tracking-wider mb-1">Déficit Térmico Actual</span>
+                            <span id="energia-perdida" class="text-2xl font-mono text-emerald-400">-0 <span class="text-sm">kWh</span></span>
+                        </div>
+                        <div class="text-right">
+                            <span class="block text-slate-400 text-xs uppercase tracking-wider mb-1">Tiempo Est. Recuperación</span>
+                            <span id="tiempo-recuperacion" class="text-lg font-mono text-cyan-300">Sistema al 100%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                    <div class="bg-slate-900 p-3 rounded-lg border border-slate-700 flex flex-col items-center">
+                        <span class="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Entrada Red</span>
+                        <span class="text-xl font-mono text-cyan-400">15ºC</span>
+                        <div class="mt-2 text-xs font-mono bg-slate-800 px-2 py-1 rounded w-full text-center border border-slate-600">
+                            <span class="text-slate-400">Q=</span> <span id="q-consumo" class="text-cyan-300">0.90</span>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 p-3 rounded-lg border border-slate-700 flex flex-col items-center">
+                        <span class="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Mezcla (Base D1)</span>
+                        <span id="telemetria-td1" class="text-xl font-mono text-orange-300">45ºC</span>
+                        <div class="mt-2 text-xs font-mono bg-slate-800 px-2 py-1 rounded w-full text-center border border-slate-600">
+                            <span class="text-slate-400">Q<sub>int</sub>=</span> <span id="q-depositos" class="text-blue-300">+1.60</span>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 p-3 rounded-lg border border-slate-700 flex flex-col items-center relative overflow-hidden">
+                        <div class="absolute inset-0 bg-blue-500/5"></div>
+                        <span class="text-slate-400 text-[10px] uppercase tracking-wider mb-1 z-10">Aerotermia</span>
+                        <span id="telemetria-aero" class="text-xl font-mono text-blue-400 z-10">33kW</span>
+                        <div class="mt-2 text-xs font-mono bg-slate-800 px-2 py-1 rounded w-full text-center border border-blue-900/50 z-10">
+                            <span class="text-slate-400">Q=</span> <span class="text-blue-300">1.10</span>
+                        </div>
+                    </div>
+
+                    <div id="card-gas" class="p-3 rounded-lg border flex flex-col items-center relative overflow-hidden bg-slate-900 border-slate-700">
+                        <div id="card-gas-bg" class="absolute inset-0 bg-transparent"></div>
+                        <span id="card-gas-title" class="text-[10px] uppercase tracking-wider mb-1 z-10 text-slate-400">Gas (Interc.)</span>
+                        <span id="telemetria-gas" class="text-xl font-mono z-10 text-slate-600">0kW</span>
+                        <div class="mt-2 text-xs font-mono bg-slate-800 px-2 py-1 rounded w-full text-center border border-slate-600 z-10">
+                            <span class="text-slate-400">Q=</span> <span class="text-orange-300">1.10</span>
+                        </div>
+                    </div>
+
+                    <div id="card-suministro" class="p-3 rounded-lg border flex flex-col items-center bg-emerald-900/20 border-emerald-500/50">
+                        <span class="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Montante VIV.</span>
+                        <span id="telemetria-suministro" class="text-xl font-mono text-emerald-400">60ºC</span>
+                        <div class="mt-2 text-xs font-mono bg-slate-800 px-2 py-1 rounded w-full text-center border border-slate-600">
+                            <span class="text-slate-400">Q=</span> <span id="q-suministro" class="text-emerald-300">0.90</span>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 p-3 rounded-lg border border-slate-700 flex flex-col items-center">
+                        <span class="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Recirculación</span>
+                        <span class="text-xl font-mono text-purple-400">50ºC</span>
+                        <div class="mt-2 text-xs font-mono bg-slate-800 px-2 py-1 rounded w-full text-center border border-purple-900/50">
+                            <span class="text-slate-400">Q=</span> <span class="text-purple-300">1.80</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Visor SVG -->
+        <div class="bg-slate-800 rounded-xl p-4 md:p-6 shadow-lg border border-slate-700 overflow-x-auto">
+            <div class="min-w-[950px]">
+                <svg viewBox="0 0 1100 650" class="w-full h-auto">
+                    <defs>
+                        <!-- >= 55: Rojo a Naranja Fuerte -->
+                        <linearGradient id="tankGradHot" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stop-color="#ef4444" /> 
+                            <stop offset="100%" stop-color="#f97316" /> 
+                        </linearGradient>
+                        <!-- 40-54: Naranja a Amarillo (Cálido real) -->
+                        <linearGradient id="tankGradWarm" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stop-color="#f97316" /> 
+                            <stop offset="100%" stop-color="#facc15" /> 
+                        </linearGradient>
+                        <!-- 25-39: Amarillo a Azul (Mezcla) -->
+                        <linearGradient id="tankGradMix" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stop-color="#facc15" /> 
+                            <stop offset="100%" stop-color="#3b82f6" /> 
+                        </linearGradient>
+                        <!-- < 25: Azul a Cyan (Frío) -->
+                        <linearGradient id="tankGradCold" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stop-color="#3b82f6" /> 
+                            <stop offset="100%" stop-color="#06b6d4" /> 
+                        </linearGradient>
+                    </defs>
+
+                    <!-- Tuberías fondo gris -->
+                    <g stroke="#334155" stroke-width="8" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M 50 550 L 220 550" />
+                        <path d="M 220 370 L 220 340 L 300 340 L 300 550 L 380 550" />
+                        <path d="M 380 370 L 380 340 L 460 340 L 460 550 L 540 550" />
+                        <path d="M 540 370 L 540 330 L 700 330 L 700 550 L 770 550" />
+                        <path d="M 180 460 L 120 460 L 120 250 L 650 250" />
+                        <path d="M 350 120 L 750 120 L 750 280" />
+                        <path d="M 800 280 L 800 90 L 1050 90" />
+                        <path d="M 1050 600 L 160 600 L 160 550" />
+                        <path d="M 350 250 L 350 200" /> <path d="M 500 250 L 500 200" /> <path d="M 650 250 L 650 200" />
+                        <path d="M 350 150 L 350 120" /> <path d="M 500 150 L 500 120" /> <path d="M 650 150 L 650 120" />
+                        <path d="M 850 140 L 750 140" /> <path d="M 750 100 L 850 100" />
+                    </g>
+
+                    <g transform="translate(160, 560)">
+                        <path d="M -10,-10 L 10,0 L -10,10 Z" fill="#334155" stroke="#cbd5e1" stroke-width="2" transform="rotate(-90)" />
+                        <line x1="-15" y1="0" x2="15" y2="0" stroke="#cbd5e1" stroke-width="2" />
+                    </g>
+
+                    <!-- Animación Tuberías -->
+                    <g stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                        <path id="anim-red" d="M 50 550 L 220 550" stroke="#06b6d4" class="flow-anim-slow hidden" />
+                        
+                        <g id="anim-depositos" class="hidden">
+                            <path id="anim-d1-d2" d="M 220 370 L 220 340 L 300 340 L 300 550 L 380 550" stroke="#f59e0b" class="flow-anim" />
+                            <path id="anim-d2-d3" d="M 380 370 L 380 340 L 460 340 L 460 550 L 540 550" stroke="#f59e0b" class="flow-anim" />
+                            <path id="anim-d3-d4" d="M 540 370 L 540 330 L 700 330 L 700 550 L 770 550" stroke="#ef4444" class="flow-anim" />
+                        </g>
+
+                        <path id="anim-suministro" d="M 800 280 L 800 90 L 1050 90" stroke="#ef4444" class="flow-anim" />
+                        <path d="M 1050 600 L 160 600 L 160 550" stroke="#a855f7" class="flow-anim-slow" />
+                        
+                        <path id="anim-carga" d="M 180 460 L 120 460 L 120 250 L 650 250" stroke="#3b82f6" class="flow-anim" />
+                        <path id="anim-ida" d="M 350 120 L 750 120 L 750 280" stroke="#ef4444" class="flow-anim" />
+                        
+                        <path d="M 350 250 L 350 200" stroke="#3b82f6" class="flow-anim" />
+                        <path d="M 500 250 L 500 200" stroke="#3b82f6" class="flow-anim" />
+                        <path d="M 650 250 L 650 200" stroke="#3b82f6" class="flow-anim" />
+                        <path d="M 350 150 L 350 120" stroke="#ef4444" class="flow-anim" />
+                        <path d="M 500 150 L 500 120" stroke="#ef4444" class="flow-anim" />
+                        <path d="M 650 150 L 650 120" stroke="#ef4444" class="flow-anim" />
+
+                        <g id="anim-gas-pipes" class="hidden">
+                            <path d="M 850 140 L 750 140" stroke="#ef4444" class="flow-gas" stroke-width="5" />
+                            <path d="M 750 100 L 850 100" stroke="#f59e0b" class="flow-gas" stroke-width="5" />
+                        </g>
+                    </g>
+
+                    <!-- Aerotermias -->
+                    <g transform="translate(300, 150)">
+                        <rect x="0" y="0" width="100" height="50" rx="4" fill="#475569" stroke="#94a3b8" stroke-width="2" />
+                        <circle cx="25" cy="25" r="15" fill="#334155" />
+                        <circle cx="75" cy="25" r="15" fill="#334155" />
+                        <text x="50" y="20" fill="white" font-size="10" text-anchor="middle" font-weight="bold">Aero 1</text>
+                        <text x="50" y="35" fill="#94a3b8" font-size="9" text-anchor="middle">11 kW</text>
+                    </g>
+                    <g transform="translate(450, 150)">
+                        <rect x="0" y="0" width="100" height="50" rx="4" fill="#475569" stroke="#94a3b8" stroke-width="2" />
+                        <circle cx="25" cy="25" r="15" fill="#334155" />
+                        <circle cx="75" cy="25" r="15" fill="#334155" />
+                        <text x="50" y="20" fill="white" font-size="10" text-anchor="middle" font-weight="bold">Aero 2</text>
+                        <text x="50" y="35" fill="#94a3b8" font-size="9" text-anchor="middle">11 kW</text>
+                    </g>
+                    <g transform="translate(600, 150)">
+                        <rect x="0" y="0" width="100" height="50" rx="4" fill="#475569" stroke="#94a3b8" stroke-width="2" />
+                        <circle cx="25" cy="25" r="15" fill="#334155" />
+                        <circle cx="75" cy="25" r="15" fill="#334155" />
+                        <text x="50" y="20" fill="white" font-size="10" text-anchor="middle" font-weight="bold">Aero 3</text>
+                        <text x="50" y="35" fill="#94a3b8" font-size="9" text-anchor="middle">11 kW</text>
+                    </g>
+
+                    <!-- Intercambiador Placas -->
+                    <g transform="translate(730, 90)">
+                        <rect x="0" y="0" width="40" height="80" rx="2" fill="#94a3b8" stroke="#cbd5e1" stroke-width="2" />
+                        <line x1="5" y1="10" x2="35" y2="10" stroke="#475569" stroke-width="2" />
+                        <line x1="5" y1="20" x2="35" y2="20" stroke="#475569" stroke-width="2" />
+                        <line x1="5" y1="30" x2="35" y2="30" stroke="#475569" stroke-width="2" />
+                        <line x1="5" y1="40" x2="35" y2="40" stroke="#475569" stroke-width="2" />
+                        <line x1="5" y1="50" x2="35" y2="50" stroke="#475569" stroke-width="2" />
+                        <line x1="5" y1="60" x2="35" y2="60" stroke="#475569" stroke-width="2" />
+                        <line x1="5" y1="70" x2="35" y2="70" stroke="#475569" stroke-width="2" />
+                        <text x="50" y="45" fill="white" font-size="11" font-weight="bold">Intercambiador</text>
+                    </g>
+
+                    <!-- Calderas Gas -->
+                    <g transform="translate(850, 80)">
+                        <rect id="gas-rect" x="0" y="0" width="120" height="80" rx="6" fill="#334155" stroke="#64748b" stroke-width="3" />
+                        <text x="60" y="25" fill="white" font-size="12" text-anchor="middle" font-weight="bold">Cascada Gas</text>
+                        <text id="gas-powertxt" x="60" y="40" fill="#f59e0b" font-size="11" text-anchor="middle">2 x 98 kW</text>
+                        
+                        <g id="gas-flames-group" transform="translate(60, 65)">
+                            <path class="flame" d="M-10,0 C-10,-10 -5,-15 0,-20 C5,-15 10,-10 10,0 Z" fill="#ef4444" />
+                            <path class="flame" d="M-6,0 C-6,-6 -3,-10 0,-14 C3,-10 6,-6 6,0 Z" fill="#f59e0b" />
+                            <path id="gas-flame-high" class="flame hidden" d="M-15,0 C-15,-8 -10,-12 -5,-16 C0,-12 5,-8 5,0 Z" fill="#f59e0b" />
+                        </g>
+                        
+                        <text id="gas-statustxt" x="60" y="65" fill="#64748b" font-size="10" text-anchor="middle" class="hidden">STANDBY</text>
+                    </g>
+
+                    <!-- Depósito 1 -->
+                    <g transform="translate(180, 370)">
+                        <rect id="rect-d1" x="0" y="0" width="80" height="180" rx="20" fill="url(#tankGradHot)" stroke="#64748b" stroke-width="3" />
+                        <text x="40" y="90" fill="white" font-size="14" text-anchor="middle" font-weight="bold">D1</text>
+                        <rect x="22" y="140" width="36" height="18" rx="4" fill="#1e293b" />
+                        <text id="text-d1" x="40" y="153" fill="white" font-size="11" text-anchor="middle">55ºC</text>
+                    </g>
+                    <!-- Depósito 2 -->
+                    <g transform="translate(340, 370)">
+                        <rect id="rect-d2" x="0" y="0" width="80" height="180" rx="20" fill="url(#tankGradWarm)" stroke="#64748b" stroke-width="3" />
+                        <text x="40" y="90" fill="white" font-size="14" text-anchor="middle" font-weight="bold">D2</text>
+                        <rect x="22" y="140" width="36" height="18" rx="4" fill="#1e293b" />
+                        <text id="text-d2" x="40" y="153" fill="white" font-size="11" text-anchor="middle">50ºC</text>
+                    </g>
+                    <!-- Depósito 3 -->
+                    <g transform="translate(500, 370)">
+                        <rect id="rect-d3" x="0" y="0" width="80" height="180" rx="20" fill="url(#tankGradWarm)" stroke="#64748b" stroke-width="3" />
+                        <text x="40" y="90" fill="white" font-size="14" text-anchor="middle" font-weight="bold">D3</text>
+                        <rect x="22" y="140" width="36" height="18" rx="4" fill="#1e293b" />
+                        <text id="text-d3" x="40" y="153" fill="white" font-size="11" text-anchor="middle">45ºC</text>
+                    </g>
+
+                    <!-- Depósito 4 -->
+                    <g transform="translate(720, 290)">
+                        <rect id="rect-d4" x="0" y="0" width="100" height="260" rx="20" fill="url(#tankGradHot)" stroke="#64748b" stroke-width="3" />
+                        <text x="50" y="130" fill="white" font-size="16" text-anchor="middle" font-weight="bold">D4 (Final)</text>
+                        <text x="50" y="150" fill="#cbd5e1" font-size="12" text-anchor="middle">2.000 L</text>
+                        <rect id="rect-bg-d4" x="30" y="180" width="40" height="20" rx="4" fill="#1e293b" stroke="#1e293b"/>
+                        <text id="text-d4" x="50" y="194" fill="white" font-size="13" text-anchor="middle">60ºC</text>
+                    </g>
+
+                    <!-- Bombas -->
+                    <g transform="translate(120, 390)">
+                        <circle cx="0" cy="0" r="16" fill="#1e293b" stroke="#94a3b8" stroke-width="2" />
+                        <polygon points="-8,6 0,-8 8,6" fill="#94a3b8" />
+                        <text x="-40" y="-20" fill="white" font-size="11">B. Carga</text>
+                    </g>
+                    
+                    <g transform="translate(200, 600)">
+                        <circle cx="0" cy="0" r="16" fill="#1e293b" stroke="#a855f7" stroke-width="2" />
+                        <polygon points="6,-8 -8,0 6,8" fill="#a855f7" />
+                        <text x="-20" y="25" fill="white" font-size="11">B. Recirc.</text>
+                    </g>
+
+                    <!-- Etiquetas Aux -->
+                    <text x="10" y="540" fill="#06b6d4" font-size="13" font-weight="bold">RED AFCH</text>
+                    <text x="1060" y="85" fill="#ef4444" font-size="14" font-weight="bold">MONTANTE</text>
+                    <text x="1060" y="100" fill="#ef4444" font-size="12">65 Viviendas</text>
+                </svg>
+            </div>
+        </div>
+    </div>
+
+    <!-- Script principal de lógica de simulación -->
+    <script>
+        let demanda = 20;
+        let gasOperativo = true;
+
+        const qCarga = 1.1; 
+        const qRecirc = 1.8; 
+        const qPicoMax = 4.5; 
+        const potAeroMax = 33; 
+        const potGasMax = 196; 
+        const potPerdidas = 12;
+
+        // UMBRALES CORREGIDOS Y AJUSTADOS:
+        // ≥ 55: Rojo/Naranja
+        // ≥ 40: Naranja/Amarillo (Cálido)
+        // ≥ 25: Amarillo/Azul (Mezcla)
+        // < 25: Azul/Cyan (Frío)
+        function getTankColor(temp) {
+            if (temp >= 55) return "url(#tankGradHot)";
+            if (temp >= 40) return "url(#tankGradWarm)"; 
+            if (temp >= 25) return "url(#tankGradMix)";
+            return "url(#tankGradCold)";
+        }
+
+        function setDemanda(val) {
+            demanda = val;
+            
+            [0, 20, 50, 100].forEach(d => {
+                const btn = document.getElementById(`btn-dem-${d}`);
+                if(d === demanda) {
+                    btn.classList.remove('btn-inactive');
+                    btn.classList.add('btn-active-blue');
+                } else {
+                    btn.classList.remove('btn-active-blue');
+                    btn.classList.add('btn-inactive');
+                }
+            });
+            updateSimulation();
+        }
+
+        function setGasOperativo(val) {
+            gasOperativo = val;
+            const btnOn = document.getElementById('btn-gas-on');
+            const btnOff = document.getElementById('btn-gas-off');
+            
+            if(gasOperativo) {
+                btnOn.className = "flex-1 py-2 text-sm rounded font-bold transition-all btn-gas-ok";
+                btnOff.className = "flex-1 py-2 text-sm rounded font-bold transition-all btn-gas-idle";
+            } else {
+                btnOn.className = "flex-1 py-2 text-sm rounded font-bold transition-all btn-gas-idle";
+                btnOff.className = "flex-1 py-2 text-sm rounded font-bold transition-all btn-gas-fail";
+            }
+            updateSimulation();
+        }
+
+        function updateSimulation() {
+            const qConsumo = qPicoMax * (demanda / 100);
+            const isConsuming = qConsumo > 0;
+            
+            let tD1 = 55, tD2 = 50, tD3 = 45, tD4 = 60, tSuministro = 60;
+            let aeroPowerUsed = 0, gasPowerUsed = 0;
+            let energiaPerdida = 0, tiempoRecuperacion = "", systemStatus = "", statusColor = "text-emerald-400";
+            let animationSpeed = "flow-anim-slow";
+
+            // AQUÍ RESTAURAMOS LA VARIACIÓN DINÁMICA DE TEMPERATURAS
+            if (demanda === 0) {
+                aeroPowerUsed = potPerdidas;
+                gasPowerUsed = 0;
+                
+                tD1 = 55; tD2 = 50; tD3 = 45; tD4 = 60;
+                tSuministro = 60;
+                energiaPerdida = 0;
+                tiempoRecuperacion = "Sistema al 100% de carga útil";
+                
+                systemStatus = gasOperativo 
+                    ? "Régimen Nocturno: Aerotermia modulando. Anillo mantiene D1 caliente. D3 se enfría por inactividad."
+                    : "Régimen Nocturno (Gas OFF): Sin impacto. La Aerotermia cubre las pérdidas sin problema.";
+                statusColor = "text-emerald-400";
+                animationSpeed = "flow-anim-slow";
+            } else {
+                aeroPowerUsed = potAeroMax;
+                const potReqSuministro = qConsumo * 45 * 1.16;
+                const deficit = Math.max(0, (potReqSuministro + potPerdidas) - aeroPowerUsed);
+
+                if (gasOperativo) {
+                    gasPowerUsed = Math.min(potGasMax, deficit);
+                    tD4 = 60; // D4 intacto por el gas
+                    tSuministro = 60;
+
+                    if (demanda === 20) {
+                        // Descenso suave
+                        tD1 = 44; tD2 = 38; tD3 = 32;
+                        energiaPerdida = 15;
+                        tiempoRecuperacion = "Apoyo puntual. Recuperación en 5 min (Gas).";
+                        systemStatus = "Uso Normal (20%): Aerotermia base + Calderas modulando suave (14kW). Óptimo.";
+                        statusColor = "text-blue-400";
+                        animationSpeed = "flow-anim";
+                    } else if (demanda === 50) {
+                        // Descenso marcado
+                        tD1 = 34; tD2 = 28; tD3 = 24;
+                        energiaPerdida = 52;
+                        tiempoRecuperacion = "14 minutos con apoyo de Gas.";
+                        systemStatus = "Alta Demanda (50%): Aerotermia al 100% + Calderas aportando 84kW. D4 intacto.";
+                        statusColor = "text-yellow-400";
+                        animationSpeed = "flow-anim-fast";
+                    } else if (demanda === 100) {
+                        // Inundación masiva de AFCH
+                        tD1 = 26; tD2 = 22; tD3 = 18;
+                        energiaPerdida = 120;
+                        tiempoRecuperacion = "35 minutos con apoyo máximo de Gas.";
+                        systemStatus = "Pico Extremo (100%): Calderas al límite (196kW) respaldando. D4 protegido a 60ºC.";
+                        statusColor = "text-orange-500 font-bold";
+                        animationSpeed = "flow-anim-very-fast";
+                    }
+                } else {
+                    gasPowerUsed = 0;
+                    
+                    if (demanda === 20) {
+                        tD1 = 44; tD2 = 38; tD3 = 32;
+                        tD4 = 52; tSuministro = 52; // Caen todos
+                        energiaPerdida = 25;
+                        tiempoRecuperacion = "1 hora 15 min (Solo Aerotermia).";
+                        systemStatus = "Fallo Gas al 20%: Acumulación amortigua déficit. La aerotermia ralentiza la caída (52ºC).";
+                        statusColor = "text-orange-400";
+                        animationSpeed = "flow-anim";
+                    } else if (demanda === 50) {
+                        tD1 = 34; tD2 = 28; tD3 = 24;
+                        tD4 = 40; tSuministro = 40; // Colapso grave
+                        energiaPerdida = 66;
+                        tiempoRecuperacion = "3 horas 8 min (Solo Aerotermia).";
+                        systemStatus = "Fallo Gas al 50%: Déficit grave (Faltan 84kW). Los depósitos se enfrían rápido (40ºC).";
+                        statusColor = "text-red-400 font-bold";
+                        animationSpeed = "flow-anim-fast";
+                    } else if (demanda === 100) {
+                        tD1 = 26; tD2 = 22; tD3 = 18;
+                        tD4 = 28; tSuministro = 28; // Colapso total
+                        energiaPerdida = 185;
+                        tiempoRecuperacion = "> 8 horas (Colapso del sistema).";
+                        systemStatus = "Fallo Gas al 100%: COLAPSO TÉRMICO. Caudal entrante helado sin oposición (28ºC).";
+                        statusColor = "text-red-600 font-bold";
+                        animationSpeed = "flow-anim-very-fast";
+                    }
+                }
+            }
+
+            const qDepositos = (qConsumo + qRecirc) - qCarga;
+
+            // DOM Panel Textos
+            document.getElementById('system-status').innerText = systemStatus;
+            document.getElementById('system-status').className = `text-sm ${statusColor}`;
+            document.getElementById('status-container').className = `p-4 rounded-lg border ${gasOperativo ? 'bg-slate-900 border-slate-700' : 'bg-red-950/30 border-red-900/50'}`;
+            
+            document.getElementById('energia-perdida').innerHTML = `-${energiaPerdida} <span class="text-sm">kWh</span>`;
+            document.getElementById('energia-perdida').className = `text-2xl font-mono ${energiaPerdida > 100 ? 'text-red-400' : (energiaPerdida > 0 ? 'text-orange-400' : 'text-emerald-400')}`;
+            document.getElementById('tiempo-recuperacion').innerText = tiempoRecuperacion;
+
+            document.getElementById('q-consumo').innerText = qConsumo.toFixed(2);
+            document.getElementById('telemetria-td1').innerText = `${tD1}ºC`;
+            document.getElementById('telemetria-td1').className = `text-xl font-mono ${tD1 < 40 ? (tD1 < 25 ? 'text-cyan-400' : 'text-yellow-400') : 'text-orange-300'}`;
+            document.getElementById('q-depositos').innerText = `+${qDepositos.toFixed(2)}`;
+            
+            document.getElementById('telemetria-aero').innerText = `${Math.round(aeroPowerUsed)}kW`;
+            
+            const gasCard = document.getElementById('card-gas');
+            const gasCardTitle = document.getElementById('card-gas-title');
+            const gasTelemetria = document.getElementById('telemetria-gas');
+            const gasBg = document.getElementById('card-gas-bg');
+            
+            if(gasOperativo) {
+                gasCard.className = "p-3 rounded-lg border flex flex-col items-center relative overflow-hidden bg-slate-900 border-slate-700";
+                gasCardTitle.innerText = "Gas (Interc.)";
+                gasCardTitle.className = "text-[10px] uppercase tracking-wider mb-1 z-10 text-slate-400";
+                gasTelemetria.className = `text-xl font-mono z-10 ${gasPowerUsed > 0 ? 'text-orange-500 font-bold' : 'text-slate-600'}`;
+                gasBg.className = `absolute inset-0 ${gasPowerUsed > 0 ? 'bg-orange-500/10' : 'bg-transparent'}`;
+            } else {
+                gasCard.className = "p-3 rounded-lg border flex flex-col items-center relative overflow-hidden bg-red-950/20 border-red-900";
+                gasCardTitle.innerText = "GAS AVERIADO";
+                gasCardTitle.className = "text-[10px] uppercase tracking-wider mb-1 z-10 text-red-400/70 font-bold";
+                gasTelemetria.className = "text-xl font-mono z-10 text-slate-600";
+                gasBg.className = "absolute inset-0 bg-transparent";
+            }
+            gasTelemetria.innerText = `${Math.round(gasPowerUsed)}kW`;
+
+            document.getElementById('telemetria-suministro').innerText = `${tSuministro}ºC`;
+            document.getElementById('q-suministro').innerText = qConsumo.toFixed(2);
+            document.getElementById('card-suministro').className = `p-3 rounded-lg border flex flex-col items-center ${tSuministro < 40 ? 'bg-red-900/20 border-red-500/50 shadow-[0_0_15px_rgba(239,68,68,0.2)]' : (tSuministro < 55 ? 'bg-orange-900/20 border-orange-500/50' : 'bg-emerald-900/20 border-emerald-500/50')}`;
+            document.getElementById('telemetria-suministro').className = `text-xl font-mono ${tSuministro < 40 ? 'text-red-400 font-bold animate-pulse' : (tSuministro < 55 ? 'text-orange-400 font-bold' : 'text-emerald-400')}`;
+
+            // DOM SVG Textos y Colores
+            document.getElementById('text-d1').textContent = `${tD1}ºC`;
+            document.getElementById('rect-d1').setAttribute('fill', getTankColor(tD1));
+            
+            document.getElementById('text-d2').textContent = `${tD2}ºC`;
+            document.getElementById('rect-d2').setAttribute('fill', getTankColor(tD2));
+            
+            document.getElementById('text-d3').textContent = `${tD3}ºC`;
+            document.getElementById('rect-d3').setAttribute('fill', getTankColor(tD3));
+            
+            document.getElementById('text-d4').textContent = `${tD4}ºC`;
+            document.getElementById('rect-d4').setAttribute('fill', getTankColor(tD4));
+            document.getElementById('rect-bg-d4').setAttribute('stroke', tD4 < 40 ? '#ef4444' : '#1e293b');
+
+            // DOM Gas UI
+            const gasRect = document.getElementById('gas-rect');
+            const gasPowertxt = document.getElementById('gas-powertxt');
+            const gasStatustxt = document.getElementById('gas-statustxt');
+            const gasFlames = document.getElementById('gas-flames-group');
+            const gasFlameHigh = document.getElementById('gas-flame-high');
+
+            if (!gasOperativo) {
+                gasRect.setAttribute('fill', '#450a0a');
+                gasRect.setAttribute('stroke', '#b91c1c');
+                gasPowertxt.setAttribute('fill', '#f87171');
+                gasPowertxt.textContent = 'AVERÍA / APAGADO';
+                gasFlames.classList.add('hidden');
+                gasStatustxt.classList.remove('hidden');
+                gasStatustxt.textContent = 'FUERA DE SERVICIO';
+                gasStatustxt.setAttribute('fill', '#b91c1c');
+                gasStatustxt.setAttribute('font-weight', 'bold');
+            } else {
+                gasRect.setAttribute('fill', '#334155');
+                gasRect.setAttribute('stroke', '#64748b');
+                gasPowertxt.setAttribute('fill', '#f59e0b');
+                gasPowertxt.textContent = '2 x 98 kW';
+                
+                if (gasPowerUsed > 0) {
+                    gasFlames.classList.remove('hidden');
+                    gasStatustxt.classList.add('hidden');
+                    if (gasPowerUsed > 50) {
+                        gasFlameHigh.classList.remove('hidden');
+                    } else {
+                        gasFlameHigh.classList.add('hidden');
+                    }
+                } else {
+                    gasFlames.classList.add('hidden');
+                    gasStatustxt.classList.remove('hidden');
+                    gasStatustxt.textContent = 'STANDBY';
+                    gasStatustxt.setAttribute('fill', '#64748b');
+                    gasStatustxt.setAttribute('font-weight', 'normal');
+                }
+            }
+
+            // DOM Animación Tuberías
+            const animRed = document.getElementById('anim-red');
+            if (isConsuming) {
+                animRed.classList.remove('hidden');
+                animRed.className.baseVal = animationSpeed;
+            } else {
+                animRed.classList.add('hidden');
+            }
+
+            const animDeps = document.getElementById('anim-depositos');
+            if (qDepositos > 0) {
+                animDeps.classList.remove('hidden');
+                document.getElementById('anim-d1-d2').setAttribute('stroke', tD2 < 40 ? '#3b82f6' : '#f59e0b');
+                document.getElementById('anim-d1-d2').className.baseVal = animationSpeed;
+                document.getElementById('anim-d2-d3').setAttribute('stroke', tD3 < 40 ? '#3b82f6' : '#f59e0b');
+                document.getElementById('anim-d2-d3').className.baseVal = animationSpeed;
+                document.getElementById('anim-d3-d4').setAttribute('stroke', tD4 < 40 ? '#f59e0b' : '#ef4444');
+                document.getElementById('anim-d3-d4').className.baseVal = animationSpeed;
+            } else {
+                animDeps.classList.add('hidden');
+            }
+
+            const animSuministro = document.getElementById('anim-suministro');
+            animSuministro.setAttribute('stroke', tSuministro < 40 ? '#f59e0b' : '#ef4444');
+            animSuministro.className.baseVal = animationSpeed;
+
+            const animCarga = document.getElementById('anim-carga');
+            animCarga.setAttribute('stroke', tD1 < 40 ? '#06b6d4' : '#3b82f6');
+            
+            const animIda = document.getElementById('anim-ida');
+            animIda.setAttribute('stroke', gasOperativo ? '#ef4444' : '#f59e0b');
+
+            const animGasPipes = document.getElementById('anim-gas-pipes');
+            if (gasPowerUsed > 0) {
+                animGasPipes.classList.remove('hidden');
+            } else {
+                animGasPipes.classList.add('hidden');
+            }
+        }
+
+        updateSimulation();
+    </script>
+</body>
+</html>
